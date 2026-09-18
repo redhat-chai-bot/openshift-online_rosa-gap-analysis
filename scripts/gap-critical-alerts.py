@@ -33,6 +33,28 @@ REPORT_SLUG = "critical-alerts"
 PLATFORM_NS_PREFIXES = ("openshift-", "kube-")
 DURATION_RE = re.compile(r"(\d+)(ms|s|m|h|d)")
 
+# Alert rule groups to silence per (minor version, topology). These ship in the
+# base OCP payload but can never fire on the given ROSA topology, so they are
+# labelled "not-applicable" instead of inherit/silence/review. version and
+# topology are supplied at runtime from the resolved target (Prow job), so the
+# same code handles every release.
+#
+# To silence a new alert group, ONLY add an entry to this struct — do not edit
+# the lookup function. Format (placeholder names, not a real rule):
+#   ("<minor-version>", "<topology>"): ["<prometheus-rule-group>"]
+#
+# tnf-pacemaker.rules = TNF (Two-Node Fencing): bare-metal/edge topology
+# (pacemaker + fencing/STONITH, two control-plane nodes). ROSA's control plane
+# is cloud-managed and cannot be fenced, so these never fire on ROSA Classic.
+NOT_APPLICABLE_ALERTS = {
+    ("5.0", "classic"): ["tnf-pacemaker.rules"],
+}
+
+
+def not_applicable_groups(version, topology):
+    """Alert rule groups that can never fire for this (minor version, topology)."""
+    return NOT_APPLICABLE_ALERTS.get((version, topology), [])
+
 
 def parse_duration_seconds(value):
     """Parse a Prometheus duration string to seconds. Empty/missing is 0."""
@@ -74,8 +96,10 @@ def critical_alert_index(snapshot):
     return {item.get("id"): item for item in alerts if item.get("id")}
 
 
-def recommend_new_alert(alert):
-    """Recommend inherit / silence / review for a newly added alert."""
+def recommend_new_alert(alert, version=None, topology=None):
+    """Recommend not-applicable / inherit / silence / review for a new alert."""
+    if (alert.get("group") or "") in not_applicable_groups(version, topology):
+        return "not-applicable"
     severity = (alert.get("severity") or "").lower()
     runbook = ((alert.get("annotations") or {}).get("runbook_url") or "").strip()
     platform = is_platform_namespace(alert.get("namespace"))
@@ -108,7 +132,7 @@ def critical_alert_card(alert, recommendation, extra=None):
     return card
 
 
-def compare_critical_alerts(baseline, target):
+def compare_critical_alerts(baseline, target, version=None, topology=None):
     base = critical_alert_index(baseline)
     dest = critical_alert_index(target)
     base_ids = set(base)
@@ -119,16 +143,19 @@ def compare_critical_alerts(baseline, target):
     inherit = []
     silence = []
     review = []
+    not_applicable = []
 
     for identity in sorted(dest_ids - base_ids):
         alert = dest[identity]
-        recommendation = recommend_new_alert(alert)
+        recommendation = recommend_new_alert(alert, version, topology)
         card = critical_alert_card(alert, recommendation)
         if (alert.get("severity") or "").lower() == "critical":
             new_critical.append(card)
         else:
             new_other.append(card)
-        if recommendation == "inherit":
+        if recommendation == "not-applicable":
+            not_applicable.append(card)
+        elif recommendation == "inherit":
             inherit.append(card)
         elif recommendation == "silence":
             silence.append(card)
@@ -177,6 +204,7 @@ def compare_critical_alerts(baseline, target):
         "inherit": inherit,
         "silence": silence,
         "review": review,
+        "not_applicable": not_applicable,
     }
 
 
@@ -189,6 +217,7 @@ def summarize_critical_alerts(comparison):
         "inherit": len(comparison["inherit"]),
         "silence": len(comparison["silence"]),
         "review": len(comparison["review"]),
+        "not_applicable": len(comparison["not_applicable"]),
     }
 
 
@@ -229,16 +258,20 @@ def empty_critical_alerts_comparison():
         "inherit": [],
         "silence": [],
         "review": [],
+        "not_applicable": [],
     }
 
 
 def compare_critical_alerts_topology(
     topology, baseline_snapshot, target_snapshot,
-    baseline_topology=None, target_topology=None,
+    baseline_topology=None, target_topology=None, version=None,
 ):
-    comparison = compare_critical_alerts(baseline_snapshot, target_snapshot)
     baseline_topology = baseline_topology or topology
     target_topology = target_topology or topology
+    comparison = compare_critical_alerts(
+        baseline_snapshot, target_snapshot,
+        version=version, topology=target_topology,
+    )
     label = topology_pair_label(baseline_topology, target_topology)
     return {
         "topology": label,
@@ -287,13 +320,16 @@ def print_critical_alerts_topology(result, verbose=False):
         f"  {topology}: +{summary['new_critical']} critical, "
         f"+{summary['new_other']} other, -{summary['removed']} removed, "
         f"{summary['modified']} modified | inherit={summary['inherit']} "
-        f"silence={summary['silence']} review={summary['review']}"
+        f"silence={summary['silence']} review={summary['review']} "
+        f"not-applicable={summary['not_applicable']}"
     )
     if verbose:
         for item in result["comparison"]["inherit"]:
             log_info(f"    inherit {item['alert']} ({item['namespace']}) freq={item['predicted_frequency']}")
         for item in result["comparison"]["silence"]:
             log_info(f"    silence {item['alert']} ({item['namespace']}) severity={item['severity']}")
+        for item in result["comparison"]["not_applicable"]:
+            log_info(f"    not-applicable {item['alert']} ({item['group']})")
         for item in result["comparison"]["modified"]:
             log_info(
                 f"    review {item['alert']} changed={','.join(item.get('changed_fields') or [])}"
@@ -384,7 +420,7 @@ Exit Codes:
                         continue
                     topology_results.append(
                         compare_critical_alerts_topology(
-                            label, bsnap, tsnap,
+                            label, bsnap, tsnap, version=target_minor,
                         )
                     )
             except (OSError, ValueError, json.JSONDecodeError) as err:
@@ -411,7 +447,7 @@ Exit Codes:
                     continue
                 topology_results.append(
                     compare_critical_alerts_topology(
-                        label, bsnap, tsnap,
+                        label, bsnap, tsnap, version=target_minor,
                     )
                 )
 
@@ -427,10 +463,11 @@ Exit Codes:
         "inherit": 0,
         "silence": 0,
         "review": 0,
+        "not_applicable": 0,
         **coverage,
     }
     for result in compared:
-        for key in ("new_critical", "new_other", "removed", "modified", "inherit", "silence", "review"):
+        for key in ("new_critical", "new_other", "removed", "modified", "inherit", "silence", "review", "not_applicable"):
             combined_summary[key] += result["summary"].get(key, 0)
 
     if not compared:
@@ -471,8 +508,10 @@ Exit Codes:
             "PrometheusRule alerts. Each topology is compared to itself. HCP also compares "
             "management-cluster alerts (control plane) when ARTIFACT_DIR/management/ is present. "
             "OSD GCP is skipped for OpenShift 5.x (AWS/STS-only). "
-            "Inherit/silence recommendations are heuristics from severity, namespace, and runbook; "
-            "predicted frequency is inferred from the rule's `for` duration, not historical firing."
+            "Inherit/silence/review recommendations are heuristics from severity, namespace, and runbook; "
+            "not-applicable marks rule groups that can never fire on the target ROSA topology "
+            "(scoped by version and topology). "
+            "Predicted frequency is inferred from the rule's `for` duration, not historical firing."
         ),
     }
 
