@@ -367,24 +367,21 @@ When no admin gates exist in cluster-version-operator, acknowledgment files use 
 
 **Not-applicable alerts:**
 
-Some alert rule groups ship in the base OpenShift payload but can never fire on a given ROSA topology. They are not dropped — they still appear in the new critical/other counts, but their recommendation is `not-applicable` and they render in a dedicated "Not applicable (non-ROSA topology)" section with its own summary row (shown for awareness, no action needed). The determination is data-driven and scoped by `(minor version, topology)`, evaluated at runtime from the resolved target version + topology supplied by the Prow job.
+Some alert rule groups ship in the base OpenShift payload but target infrastructure managed OpenShift never runs, so they can never fire on any managed cluster (ROSA HCP/Classic, OSD GCP) — on any version or topology. They are not dropped: they still appear in the new critical/other counts, but their recommendation is `not-applicable` and they render in a dedicated "Not applicable (non-ROSA topology)" section with its own summary row (shown for awareness, no action needed). The determination keys on what the alert is (its rule group), not on version or topology — mirroring how SREs manually drop non-actionable alerts during gap analysis.
 
-Not-applicable groups are declared in the `NOT_APPLICABLE_ALERTS` dict in `gap-critical-alerts.py`:
-- **Key:** `(minor version, topology)` — topology names are exactly `classic`, `hcp`, `hcp-management`, `osd-gcp` (from the snapshot metadata)
-- **Value:** list of alert rule-group names (the PrometheusRule group) to mark not-applicable
-- A key applies only to that exact `(version, topology)` pair; nothing is silenced globally. Multiple groups per key are allowed.
+Not-applicable groups are declared in the `NON_MANAGED_PLATFORM_ALERT_GROUPS` frozenset in `gap-critical-alerts.py`. Each entry is a PrometheusRule group name; a group in the set is marked not-applicable everywhere.
 
-The only active entry marks TNF (Two-Node Fencing) `tnf-pacemaker.rules` not-applicable on 5.0 classic:
+The only entry today is TNF (Two-Node Fencing) `tnf-pacemaker.rules`:
 
 ```python
-NOT_APPLICABLE_ALERTS = {
-    ("5.0", "classic"): ["tnf-pacemaker.rules"],
-}
+NON_MANAGED_PLATFORM_ALERT_GROUPS = frozenset({
+    "tnf-pacemaker.rules",
+})
 ```
 
-TNF is a bare-metal/edge topology (pacemaker + fencing/STONITH, two control-plane nodes); ROSA's control plane is cloud-managed and cannot be fenced, so TNF alerts can never fire on ROSA Classic.
+TNF is a bare-metal/edge topology (pacemaker + fencing/STONITH, two control-plane nodes); a managed OpenShift control plane is cloud-managed and cannot be fenced, so TNF alerts can never fire.
 
-**Adding a not-applicable rule:** add ONE entry to `NOT_APPLICABLE_ALERTS` — do NOT edit any function. Use the form `("<minor-version>", "<topology>"): ["<prometheus-rule-group>"]`. Find the rule-group name in the Check #10 report (the alert card's "Rule group" field, e.g. `tnf-pacemaker.rules`) — that is the string to add.
+**Adding a not-applicable rule:** add the rule-group name to `NON_MANAGED_PLATFORM_ALERT_GROUPS`. Find it in the Check #10 report (the alert card's "Rule group" field, e.g. `tnf-pacemaker.rules`) — that string is the one to add.
 
 ### Check 11: Cluster Install and Delete Validation
 

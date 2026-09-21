@@ -33,27 +33,27 @@ REPORT_SLUG = "critical-alerts"
 PLATFORM_NS_PREFIXES = ("openshift-", "kube-")
 DURATION_RE = re.compile(r"(\d+)(ms|s|m|h|d)")
 
-# Alert rule groups to silence per (minor version, topology). These ship in the
-# base OCP payload but can never fire on the given ROSA topology, so they are
-# labelled "not-applicable" instead of inherit/silence/review. version and
-# topology are supplied at runtime from the resolved target (Prow job), so the
-# same code handles every release.
+# Prometheus rule groups that target infrastructure managed OpenShift never runs,
+# so their alerts can never fire on any managed cluster (ROSA HCP/Classic, OSD GCP)
+# — on any version or topology. They ship in the base OCP payload but are
+# intrinsically not applicable to managed platforms, so they are labelled
+# "not-applicable" instead of inherit/silence/review. This mirrors how SREs
+# manually drop non-actionable alerts during gap analysis: keyed on what the
+# alert *is*, never on version or topology.
 #
-# To silence a new alert group, ONLY add an entry to this struct — do not edit
-# the lookup function. Format (placeholder names, not a real rule):
-#   ("<minor-version>", "<topology>"): ["<prometheus-rule-group>"]
+# To silence a new non-applicable group, add its ".rules" group name here.
 #
 # tnf-pacemaker.rules = TNF (Two-Node Fencing): bare-metal/edge topology
-# (pacemaker + fencing/STONITH, two control-plane nodes). ROSA's control plane
-# is cloud-managed and cannot be fenced, so these never fire on ROSA Classic.
-NOT_APPLICABLE_ALERTS = {
-    ("5.0", "classic"): ["tnf-pacemaker.rules"],
-}
+# (pacemaker + fencing/STONITH, two control-plane nodes). Managed OpenShift
+# control planes are cloud-managed and cannot be fenced, so these never fire.
+NON_MANAGED_PLATFORM_ALERT_GROUPS = frozenset({
+    "tnf-pacemaker.rules",
+})
 
 
-def not_applicable_groups(version, topology):
-    """Alert rule groups that can never fire for this (minor version, topology)."""
-    return NOT_APPLICABLE_ALERTS.get((version, topology), [])
+def is_not_applicable_group(group):
+    """True if this rule group targets infrastructure managed OpenShift never runs."""
+    return (group or "") in NON_MANAGED_PLATFORM_ALERT_GROUPS
 
 
 def parse_duration_seconds(value):
@@ -96,9 +96,9 @@ def critical_alert_index(snapshot):
     return {item.get("id"): item for item in alerts if item.get("id")}
 
 
-def recommend_new_alert(alert, version=None, topology=None):
+def recommend_new_alert(alert):
     """Recommend not-applicable / inherit / silence / review for a new alert."""
-    if (alert.get("group") or "") in not_applicable_groups(version, topology):
+    if is_not_applicable_group(alert.get("group")):
         return "not-applicable"
     severity = (alert.get("severity") or "").lower()
     runbook = ((alert.get("annotations") or {}).get("runbook_url") or "").strip()
@@ -132,7 +132,7 @@ def critical_alert_card(alert, recommendation, extra=None):
     return card
 
 
-def compare_critical_alerts(baseline, target, version=None, topology=None):
+def compare_critical_alerts(baseline, target):
     base = critical_alert_index(baseline)
     dest = critical_alert_index(target)
     base_ids = set(base)
@@ -147,7 +147,7 @@ def compare_critical_alerts(baseline, target, version=None, topology=None):
 
     for identity in sorted(dest_ids - base_ids):
         alert = dest[identity]
-        recommendation = recommend_new_alert(alert, version, topology)
+        recommendation = recommend_new_alert(alert)
         card = critical_alert_card(alert, recommendation)
         if (alert.get("severity") or "").lower() == "critical":
             new_critical.append(card)
@@ -264,14 +264,11 @@ def empty_critical_alerts_comparison():
 
 def compare_critical_alerts_topology(
     topology, baseline_snapshot, target_snapshot,
-    baseline_topology=None, target_topology=None, version=None,
+    baseline_topology=None, target_topology=None,
 ):
     baseline_topology = baseline_topology or topology
     target_topology = target_topology or topology
-    comparison = compare_critical_alerts(
-        baseline_snapshot, target_snapshot,
-        version=version, topology=target_topology,
-    )
+    comparison = compare_critical_alerts(baseline_snapshot, target_snapshot)
     label = topology_pair_label(baseline_topology, target_topology)
     return {
         "topology": label,
@@ -420,7 +417,7 @@ Exit Codes:
                         continue
                     topology_results.append(
                         compare_critical_alerts_topology(
-                            label, bsnap, tsnap, version=target_minor,
+                            label, bsnap, tsnap,
                         )
                     )
             except (OSError, ValueError, json.JSONDecodeError) as err:
@@ -447,7 +444,7 @@ Exit Codes:
                     continue
                 topology_results.append(
                     compare_critical_alerts_topology(
-                        label, bsnap, tsnap, version=target_minor,
+                        label, bsnap, tsnap,
                     )
                 )
 
