@@ -549,6 +549,7 @@ def main():
                 'inherit': 0,
                 'silence': 0,
                 'review': 0,
+                'not_applicable': 0,
                 'compared_topologies': [],
                 'skipped_topologies': ['hcp', 'classic', 'osd-gcp'],
                 'compared_display_names': [],

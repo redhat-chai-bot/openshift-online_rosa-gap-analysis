@@ -3,7 +3,7 @@ name: critical-alerts-gap
 description: >
   Compare live ROSA PrometheusRule alerts between OpenShift versions using
   Critical Alerts snapshots. Recommends inherit vs silence vs
-  review. Informational; missing snapshots are SKIP.
+  review vs not-applicable. Informational; missing snapshots are SKIP.
 compatibility:
   required_tools:
     - python3
@@ -19,7 +19,7 @@ OSD GCP is skipped for OpenShift 5.x.
 ## When to Use
 
 - Identifying new critical alerts in a target OpenShift version
-- Deciding which new alerts SRE should inherit vs silence
+- Deciding which new alerts SRE should inherit vs silence vs mark not-applicable
 - Reviewing changed queries, `for` durations, or severity
 
 ## Script Usage
@@ -61,7 +61,12 @@ Prow channel: GA minors use the `staging-stable` job; pre-GA minors use
 - **Inherit**: new critical, platform namespace (`openshift-*` / `kube-*`), runbook present
 - **Silence**: new warning/info, or non-platform namespace
 - **Review**: new critical missing inherit rules, or any expr/`for`/severity change
+- **Not applicable**: rule groups that ship in the base OpenShift payload but target infrastructure managed OpenShift never runs, so they can never fire on any managed cluster (ROSA HCP/Classic, OSD GCP) on any version or topology. Still counted in new_critical/new_other, but shown for awareness in a dedicated "Not applicable (non-ROSA topology)" section with its own summary row; no action needed. Example: TNF (Two-Node Fencing) `tnf-pacemaker.rules` — TNF is a bare-metal/edge topology (pacemaker + fencing/STONITH) and a cloud-managed control plane cannot be fenced.
 - **Predicted frequency**: from `for` duration only (`<5m` high, `5m–1h` medium, `≥1h` low)
+
+## Adding a not-applicable rule
+
+To mark an alert group not-applicable, add its rule-group name (the PrometheusRule group, e.g. `tnf-pacemaker.rules`) to the `NON_MANAGED_PLATFORM_ALERT_GROUPS` frozenset in `scripts/gap-critical-alerts.py`. The set is intrinsic: a group belongs on it because its alerts target infrastructure managed OpenShift never runs, so it applies to every version and topology (no per-version/topology keying). Find the rule-group name in the Check #10 report (the alert card's "Rule group" field). The only entry today is `tnf-pacemaker.rules`.
 
 ## Exit Codes
 

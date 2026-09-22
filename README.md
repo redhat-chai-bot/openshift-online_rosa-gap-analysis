@@ -31,7 +31,7 @@ The framework performs **13 validation checks** across all scripts:
 | **7** | OCM Version Gates | Validates OCM version gate configurations | Exit 1 on FAIL |
 | **8** | Feature Gates | Tracks feature gate changes (informational) | Always PASS |
 | **9** | API Resources and CRD Diff Validation | Compares live ROSA API resources and CRDs (HCP, Classic, OSD GCP; OSD GCP skipped for 5.x) | Always PASS (SKIP if snapshots missing) |
-| **10** | Critical Alerts Diff Validation | Compares live PrometheusRule alerts; recommends inherit / silence / review. Same topologies as Check #9. | Always PASS (SKIP if snapshots missing) |
+| **10** | Critical Alerts Diff Validation | Compares live PrometheusRule alerts; recommends inherit / silence / review / not-applicable. Same topologies as Check #9. | Always PASS (SKIP if snapshots missing) |
 | **11** | Cluster Install and Delete Validation | Compares live ClusterOperator/node install health (same topologies as Check #9). Delete-duration metrics are not in the snapshot yet. | Always PASS (SKIP if snapshots missing) |
 | **12** | Target E2E Validation and alert monitoring | Target-version rosa-e2e JUnit (`junit-rosa-e2e.xml`). HCP, Classic, and OSD GCP. OSD GCP skipped for 5.x. Missing JUnit is SKIP. Failed tests are reported as FAIL in the report (current e2e quality) and do not fail the job. Alert monitoring SKIP until VerifyNoCriticalAlerts exists in rosa-e2e. | Always PASS (SKIP if JUnit missing) |
 | **13** | Upgrade Validation from Y-1 to Y with E2E Tests | Y-1 → Y upgrade path from rosa-e2e HCP, Classic, and OSD GCP upgrade periodics. Missing JUnit is SKIP. Failed post-upgrade e2e or unhealthy ClusterOperators FAIL. | Exit 1 on FAIL |

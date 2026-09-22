@@ -19,6 +19,7 @@
         .badge-inherit { background-color: #d4edda; color: #155724; }
         .badge-silence { background-color: #fff3cd; color: #856404; }
         .badge-review { background-color: #f8d7da; color: #721c24; }
+        .badge-not-applicable { background-color: #e2e3e5; color: #383d41; }
         .badge-high { background-color: #f8d7da; color: #721c24; }
         .badge-medium { background-color: #fff3cd; color: #856404; }
         .badge-low { background-color: #d1ecf1; color: #0c5460; }
@@ -51,6 +52,7 @@
                 <tr><td>Recommend inherit</td><td style="text-align: center;">{{ summary.inherit }}</td></tr>
                 <tr><td>Recommend silence</td><td style="text-align: center;">{{ summary.silence }}</td></tr>
                 <tr><td>Require review</td><td style="text-align: center;">{{ summary.review }}</td></tr>
+                <tr><td>Not applicable (non-ROSA topology)</td><td style="text-align: center;">{{ summary.not_applicable or 0 }}</td></tr>
             </tbody>
         </table>
 
@@ -99,6 +101,25 @@
                     <td>{{ item.severity }}</td>
                     <td>{{ item.for or '—' }}</td>
                     <td><span class="badge badge-{{ item.predicted_frequency }}">{{ item.predicted_frequency }}</span></td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+
+        {% if topo.comparison.not_applicable %}
+        <h3>Not applicable (non-ROSA topology)</h3>
+        <p class="note">These alerts ship in the base OpenShift payload but target a topology ROSA does not run (e.g. TNF / Two-Node Fencing), so they can never fire on ROSA. Shown for awareness; no action needed.</p>
+        <table>
+            <thead><tr><th>Alert</th><th>Namespace</th><th>Severity</th><th>Rule group</th><th>For</th></tr></thead>
+            <tbody>
+            {% for item in topo.comparison.not_applicable %}
+                <tr>
+                    <td><code>{{ item.alert }}</code></td>
+                    <td>{{ item.namespace }}</td>
+                    <td>{{ item.severity }}</td>
+                    <td><code>{{ item.group }}</code></td>
+                    <td>{{ item.for or '—' }}</td>
                 </tr>
             {% endfor %}
             </tbody>
@@ -174,7 +195,7 @@
         </table>
         {% endif %}
 
-        {% if not (topo.comparison.inherit or topo.comparison.silence or topo.comparison.modified or topo.comparison.new_critical or topo.comparison.new_other or topo.comparison.removed) %}
+        {% if not (topo.comparison.inherit or topo.comparison.silence or topo.comparison.not_applicable or topo.comparison.modified or topo.comparison.new_critical or topo.comparison.new_other or topo.comparison.removed) %}
         <p><em>No alert differences for this topology.</em></p>
         {% endif %}
         {% endif %}

@@ -17,7 +17,7 @@ All scripts use a consistent global check numbering system:
 | **7** | OCM Version Gates | Validates OCM version gate existence, configurations, and metadata for target OCP versions compared to baseline version gates | Exit code 1 on FAIL |
 | **8** | Feature Gates | Analyzes feature gate changes from Sippy API (Info only, always executed last). **Z-stream behavior:** When comparing z-stream versions (e.g., 4.21.15 → 4.21.16), shows default feature gates instead of differences | Always PASS (exit code 0) |
 | **9** | API Resources and CRD Diff Validation | Compares live ROSA API resources and CRDs from HCP, Classic, and OSD GCP cluster snapshots. Each topology is compared to itself. OSD GCP is skipped for OpenShift 5.x (AWS/STS-only). Identifies new/removed APIs and CRDs, version promotions, and deprecations that may affect managed services. Missing snapshots are SKIP, not FAIL. | Always PASS (exit code 0) |
-| **10** | Critical Alerts Diff Validation | Compares live PrometheusRule alerting rules from HCP, Classic, and OSD GCP cluster snapshots. Same topologies as Check #9. Identifies new critical alerts, modified queries/thresholds/severity, and recommends inherit vs silence vs review. Missing snapshots are SKIP. | Always PASS (exit code 0) |
+| **10** | Critical Alerts Diff Validation | Compares live PrometheusRule alerting rules from HCP, Classic, and OSD GCP cluster snapshots. Same topologies as Check #9. Identifies new critical alerts, modified queries/thresholds/severity, and recommends inherit vs silence vs review vs not-applicable. Missing snapshots are SKIP. | Always PASS (exit code 0) |
 | **11** | Cluster Install and Delete Validation | Compares live ClusterOperator and node health from HCP, Classic, and OSD GCP cluster snapshots taken in the rosa-e2e **post** phase (before deprovision). Same topologies as Check #9. Identifies new/removed operators, newly degraded/unavailable operators, and NotReady nodes. Delete-duration metrics are not in the snapshot yet. Missing snapshots are SKIP. | Always PASS (exit code 0) |
 | **12** | Target E2E Validation and alert monitoring | Consumes target-version `junit-rosa-e2e.xml` from the existing rosa-e2e test step. Does not compare baseline vs target. Fetches HCP, Classic, and OSD GCP JUnit. OSD GCP is skipped for OpenShift 5.x. Missing JUnit is SKIP. Failed e2e tests are reported as FAIL in the report and do not fail the job. Alert monitoring looks for a future VerifyNoCriticalAlerts test; until it exists the subsection is SKIP and does not fail the check. | Informational FAIL does not fail the job (exit 0); execution error exits 1 |
 | **13** | Upgrade Validation from Y-1 to Y with E2E Tests | Consumes existing rosa-e2e Y-1 → Y upgrade periodics (HCP, Classic STS, and OSD GCP). Does not provision clusters. Missing upgrade JUnit is SKIP. Failed post-upgrade e2e tests FAIL. Post-upgrade degraded/unavailable ClusterOperators FAIL when a JSON or oc-get txt snapshot is present. Duration comes from `upgrade-metrics.json` or `finished.json` timestamps. Missing duration and pre-upgrade COs are subsection SKIP. | Exit code 1 on FAIL |
@@ -350,7 +350,7 @@ When no admin gates exist in cluster-version-operator, acknowledgment files use 
 
 **What it analyzes:**
 - New critical / other PrometheusRule alerts
-- Inherit vs silence vs review recommendations
+- Inherit vs silence vs review vs not-applicable recommendations
 - Modified expr / `for` / severity
 
 **Data source:**
@@ -364,6 +364,24 @@ When no admin gates exist in cluster-version-operator, acknowledgment files use 
 - Missing snapshots are SKIP, not FAIL
 - Each topology is compared to itself (HCP, Classic, OSD GCP)
 - OSD GCP is skipped for OpenShift 5.x (AWS/STS-only)
+
+**Not-applicable alerts:**
+
+Some alert rule groups ship in the base OpenShift payload but target infrastructure managed OpenShift never runs, so they can never fire on any managed cluster (ROSA HCP/Classic, OSD GCP) — on any version or topology. They are not dropped: they still appear in the new critical/other counts, but their recommendation is `not-applicable` and they render in a dedicated "Not applicable (non-ROSA topology)" section with its own summary row (shown for awareness, no action needed). The determination keys on what the alert is (its rule group), not on version or topology — mirroring how SREs manually drop non-actionable alerts during gap analysis.
+
+Not-applicable groups are declared in the `NON_MANAGED_PLATFORM_ALERT_GROUPS` frozenset in `gap-critical-alerts.py`. Each entry is a PrometheusRule group name; a group in the set is marked not-applicable everywhere.
+
+The only entry today is TNF (Two-Node Fencing) `tnf-pacemaker.rules`:
+
+```python
+NON_MANAGED_PLATFORM_ALERT_GROUPS = frozenset({
+    "tnf-pacemaker.rules",
+})
+```
+
+TNF is a bare-metal/edge topology (pacemaker + fencing/STONITH, two control-plane nodes); a managed OpenShift control plane is cloud-managed and cannot be fenced, so TNF alerts can never fire.
+
+**Adding a not-applicable rule:** add the rule-group name to `NON_MANAGED_PLATFORM_ALERT_GROUPS`. Find it in the Check #10 report (the alert card's "Rule group" field, e.g. `tnf-pacemaker.rules`) — that string is the one to add.
 
 ### Check 11: Cluster Install and Delete Validation
 

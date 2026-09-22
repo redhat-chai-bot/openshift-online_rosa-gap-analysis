@@ -1727,6 +1727,7 @@
                     <tr><td>Recommend inherit</td><td style="text-align: center;">{{ critical_alerts.summary.inherit }}</td></tr>
                     <tr><td>Recommend silence</td><td style="text-align: center;">{{ critical_alerts.summary.silence }}</td></tr>
                     <tr><td>Modified / review</td><td style="text-align: center;">{{ critical_alerts.summary.modified }}</td></tr>
+                    <tr><td>Not applicable (non-ROSA topology)</td><td style="text-align: center;">{{ critical_alerts.summary.not_applicable or 0 }}</td></tr>
                 </tbody>
             </table>
             {% for topo in critical_alerts.topologies %}
@@ -1759,6 +1760,23 @@
                         <td><code>{{ item.alert }}</code></td>
                         <td>{{ item.namespace }}</td>
                         <td>{{ item.severity }}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+            {% if topo.comparison.not_applicable %}
+            <h4>Not applicable (non-ROSA topology)</h4>
+            <p><em>These alerts ship in the base OpenShift payload but target a topology ROSA does not run (e.g. TNF / Two-Node Fencing), so they can never fire on ROSA. Shown for awareness; no action needed.</em></p>
+            <table>
+                <thead><tr><th>Alert</th><th>Namespace</th><th>Severity</th><th>Rule group</th></tr></thead>
+                <tbody>
+                {% for item in topo.comparison.not_applicable %}
+                    <tr>
+                        <td><code>{{ item.alert }}</code></td>
+                        <td>{{ item.namespace }}</td>
+                        <td>{{ item.severity }}</td>
+                        <td><code>{{ item.group }}</code></td>
                     </tr>
                 {% endfor %}
                 </tbody>
@@ -1826,7 +1844,7 @@
                 </tbody>
             </table>
             {% endif %}
-            {% if not (topo.comparison.inherit or topo.comparison.silence or topo.comparison.modified or topo.comparison.new_critical or topo.comparison.new_other or topo.comparison.removed) %}
+            {% if not (topo.comparison.inherit or topo.comparison.silence or topo.comparison.not_applicable or topo.comparison.modified or topo.comparison.new_critical or topo.comparison.new_other or topo.comparison.removed) %}
             <p><em>No alert differences for this topology.</em></p>
             {% endif %}
             {% endif %}
