@@ -170,8 +170,8 @@ if [[ -n "$VERSION" ]]; then
     resolve_exit_code=$?
 
     if [[ $resolve_exit_code -ne 0 ]]; then
-        log_error "Failed to resolve versions from --version $VERSION"
-        exit 1
+        log_warning "Version $VERSION not found in accepted streams or not available — skipping gap analysis"
+        exit 0
     fi
 
     # Check for skip scenario
@@ -191,8 +191,8 @@ elif [[ -n "${OPENSHIFT_VERSION:-}" ]]; then
     resolve_exit_code=$?
 
     if [[ $resolve_exit_code -ne 0 ]]; then
-        log_error "Failed to resolve versions from OPENSHIFT_VERSION=$OPENSHIFT_VERSION"
-        exit 1
+        log_warning "Version $OPENSHIFT_VERSION not found in accepted streams or not available — skipping gap analysis"
+        exit 0
     fi
 
     # Check for skip scenario
