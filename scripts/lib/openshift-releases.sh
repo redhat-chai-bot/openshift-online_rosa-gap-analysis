@@ -19,6 +19,55 @@ readonly DEV_PREVIEW_STREAM="4-dev-preview"
 # Cache for accepted streams (to avoid multiple API calls)
 _ACCEPTED_STREAMS_CACHE=""
 
+# Cache for Sippy API response (to avoid multiple API calls)
+_SIPPY_API_CACHE=""
+
+# Retry wrapper for curl to handle transient API failures
+# Usage: curl_with_retry [curl arguments...]
+# Retries up to 3 times with exponential backoff (2s, 5s, 10s)
+# On the last attempt, stderr is not suppressed so failure details are visible
+# Returns the exit code of the final curl attempt
+curl_with_retry() {
+    local max_attempts=4
+    local attempt=1
+    local backoff_times=(2 5 10)
+    local output
+    local exit_code
+    local sleep_time
+
+    while [[ $attempt -le $max_attempts ]]; do
+        if [[ $attempt -lt $max_attempts ]]; then
+            output=$(curl "$@" 2>/dev/null)
+            exit_code=$?
+        else
+            # Last attempt: let stderr through for diagnostics
+            output=$(curl "$@")
+            exit_code=$?
+        fi
+
+        if [[ $exit_code -eq 0 ]]; then
+            echo "$output"
+            return 0
+        fi
+
+        if [[ $attempt -lt $max_attempts ]]; then
+            sleep_time=${backoff_times[$((attempt - 1))]}
+            if command -v log_warn &>/dev/null; then
+                log_warn "curl attempt ${attempt}/${max_attempts} failed (exit code ${exit_code}), retrying in ${sleep_time}s..."
+            else
+                echo "Warning: curl attempt ${attempt}/${max_attempts} failed (exit code ${exit_code}), retrying in ${sleep_time}s..." >&2
+            fi
+            sleep "$sleep_time"
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    # All attempts failed, output whatever we got from the last attempt
+    echo "$output"
+    return "$exit_code"
+}
+
 # Helper function to extract minor version number from version string
 # Usage: extract_minor_version "4.21"
 # Returns: Minor version number (e.g., "21")
@@ -118,7 +167,7 @@ validate_stable_belongs_to_version() {
 get_latest_ga_version() {
     local version
 
-    version=$(curl -s --fail "${SIPPY_API}" 2>/dev/null | \
+    version=$(fetch_sippy_releases | \
         jq -r '.ga_dates | keys | sort_by(split(".") | map(tonumber)) | last' 2>/dev/null)
 
     if [[ -z "$version" ]] || [[ "$version" == "null" ]]; then
@@ -146,7 +195,7 @@ fetch_accepted_streams() {
     fi
 
     # Fetch and cache the accepted streams
-    _ACCEPTED_STREAMS_CACHE=$(curl -s --fail "$ACCEPTED_STREAMS_API" 2>/dev/null)
+    _ACCEPTED_STREAMS_CACHE=$(curl_with_retry -s --fail "$ACCEPTED_STREAMS_API")
 
     if [[ -z "$_ACCEPTED_STREAMS_CACHE" ]] || [[ "$_ACCEPTED_STREAMS_CACHE" == "null" ]]; then
         if command -v log_error &>/dev/null; then
@@ -158,6 +207,33 @@ fetch_accepted_streams() {
     fi
 
     echo "$_ACCEPTED_STREAMS_CACHE"
+    return 0
+}
+
+# Fetch Sippy API releases (cached to avoid multiple API calls)
+# Usage: fetch_sippy_releases
+# Returns: JSON object with Sippy releases data
+# Exit: 0 on success, 1 on failure
+fetch_sippy_releases() {
+    # Return cached value if available
+    if [[ -n "$_SIPPY_API_CACHE" ]]; then
+        echo "$_SIPPY_API_CACHE"
+        return 0
+    fi
+
+    # Fetch and cache the Sippy releases
+    _SIPPY_API_CACHE=$(curl_with_retry -s --fail "$SIPPY_API")
+
+    if [[ -z "$_SIPPY_API_CACHE" ]] || [[ "$_SIPPY_API_CACHE" == "null" ]]; then
+        if command -v log_error &>/dev/null; then
+            log_error "Failed to fetch releases from Sippy API"
+        else
+            echo "Error: Failed to fetch releases from Sippy API" >&2
+        fi
+        return 1
+    fi
+
+    echo "$_SIPPY_API_CACHE"
     return 0
 }
 
@@ -182,7 +258,7 @@ get_latest_dev_version() {
     expected_dev_version="4.${expected_dev_minor}"
 
     # Get all available releases
-    all_releases=$(curl -s --fail "${SIPPY_API}" 2>/dev/null | \
+    all_releases=$(fetch_sippy_releases | \
         jq -r '.releases[]' 2>/dev/null)
 
     if [[ -z "$all_releases" ]]; then
@@ -324,7 +400,7 @@ get_latest_stable_pullspec() {
     # Fetch tags and filter to only those matching GA version line (e.g., 4.21.x)
     # Get both name and pullspec for the first matching tag
     local result
-    result=$(curl -s --fail "$api_url" 2>/dev/null | \
+    result=$(curl_with_retry -s --fail "$api_url" | \
         jq -r --arg ga "$ga_version" '.tags[] | select(.name | startswith($ga + ".")) | {name: .name, pullSpec: .pullSpec} | @json' 2>/dev/null | head -1)
 
     if [[ -z "$result" ]] || [[ "$result" == "null" ]]; then
@@ -384,7 +460,7 @@ get_latest_candidate_pullspec() {
 
     # Get candidate version and pullspec from stable stream
     local stable_result
-    stable_result=$(curl -s --fail "$stable_api_url" 2>/dev/null | \
+    stable_result=$(curl_with_retry -s --fail "$stable_api_url" | \
         jq -r --arg dev "$dev_version" '.tags[] | select(.name | startswith($dev + ".0-rc.")) | {name: .name, pullSpec: .pullSpec} | @json' 2>/dev/null | head -1)
 
     if [[ -n "$stable_result" ]] && [[ "$stable_result" != "null" ]]; then
@@ -402,7 +478,7 @@ get_latest_candidate_pullspec() {
 
     # Get candidate version and pullspec from dev-preview stream
     local dev_result
-    dev_result=$(curl -s --fail "$dev_api_url" 2>/dev/null | \
+    dev_result=$(curl_with_retry -s --fail "$dev_api_url" | \
         jq -r --arg dev "$dev_version" '.tags[] | select(.name | startswith($dev + ".0-ec.")) | {name: .name, pullSpec: .pullSpec} | @json' 2>/dev/null | head -1)
 
     if [[ -z "$dev_result" ]] || [[ "$dev_result" == "null" ]]; then
@@ -453,7 +529,7 @@ get_latest_nightly_pullspec() {
     # Build API URL (amd64)
     api_url="${RELEASE_STREAM_BASE}/${version}.0-0.nightly/latest?rel=1"
 
-    pullspec=$(curl -s --fail "$api_url" 2>/dev/null | jq -r '.pullSpec' 2>/dev/null)
+    pullspec=$(curl_with_retry -s --fail "$api_url" | jq -r '.pullSpec' 2>/dev/null)
 
     if [[ -z "$pullspec" ]] || [[ "$pullspec" == "null" ]]; then
         if command -v log_error &>/dev/null; then
@@ -484,7 +560,7 @@ get_latest_dev_nightly_version() {
     api_url="${RELEASE_STREAM_BASE}/${dev_version}.0-0.nightly/latest?rel=1"
 
     # Fetch nightly version tag
-    nightly_version=$(curl -s --fail "$api_url" 2>/dev/null | jq -r '.name' 2>/dev/null)
+    nightly_version=$(curl_with_retry -s --fail "$api_url" | jq -r '.name' 2>/dev/null)
 
     if [[ -z "$nightly_version" ]] || [[ "$nightly_version" == "null" ]]; then
         if command -v log_error &>/dev/null; then
@@ -1018,6 +1094,8 @@ resolve_openshift_version() {
 }
 
 # Export functions for use in other scripts
+export -f curl_with_retry
+export -f fetch_sippy_releases
 export -f extract_minor_version
 export -f extract_version_from_candidate
 export -f extract_version_from_stable
