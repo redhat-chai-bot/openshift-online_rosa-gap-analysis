@@ -24,3 +24,7 @@ gap_ocm_version_gate = _load_script_module(
     "gap_ocm_version_gate",
     "gap-ocm-version-gate.py",
 )
+gap_ocp_gate_ack = _load_script_module(
+    "gap_ocp_gate_ack",
+    "gap-ocp-gate-ack.py",
+)

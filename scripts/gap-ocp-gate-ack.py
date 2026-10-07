@@ -15,7 +15,7 @@ from urllib.error import URLError, HTTPError
 # Add lib directory to path
 sys.path.insert(0, str(Path(__file__).parent / 'lib'))
 
-from common import log_info, log_success, log_error, log_warning
+from common import fetch_url, log_info, log_success, log_error, log_warning
 from openshift_releases import resolve_gap_versions, extract_minor_version, get_next_minor_version
 from reporters import generate_html_report, generate_json_report, generate_status_report
 from reporters import build_status_details, collect_errors, format_failure_message
@@ -36,15 +36,12 @@ MCC_ADMIN_ACK_URL = "https://raw.githubusercontent.com/openshift/managed-cluster
 def fetch_yaml_from_github(url):
     """Fetch and parse YAML from GitHub."""
     try:
-        req = Request(url, headers={'User-Agent': 'gap-analysis-script'})
-        with urlopen(req, timeout=30) as response:
-            data = response.read()
-            return yaml.safe_load(data)
+        return yaml.safe_load(fetch_url(url, timeout=30))
     except HTTPError as e:
         if e.code == 404:
             return None
         raise
-    except (URLError, yaml.YAMLError) as e:
+    except (URLError, TimeoutError, yaml.YAMLError) as e:
         log_error(f"Failed to fetch or parse YAML from {url}: {e}")
         raise
 

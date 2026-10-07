@@ -3,7 +3,9 @@
 
 import shutil
 import sys
+import time
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen, Request
 
 
@@ -50,24 +52,60 @@ def get_project_root():
     return Path(__file__).parent.parent.parent.resolve()
 
 
-def fetch_url(url, timeout=30):
+RETRYABLE_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+
+
+def fetch_url(url, timeout=30, max_retries=2, retry_delay=2):
     """
-    Fetch content from URL with error handling.
+    Fetch content from URL, retrying transient network failures.
 
     Args:
         url: URL to fetch
         timeout: Request timeout in seconds (default: 30)
+        max_retries: Number of retries after the initial attempt (default: 2)
+        retry_delay: Initial retry delay in seconds (default: 2)
 
     Returns:
         Response data as bytes
 
     Raises:
-        HTTPError: If HTTP request fails
-        URLError: If connection fails
+        HTTPError: If HTTP request fails after retries, or is not retryable
+        URLError: If connection fails after retries
+        TimeoutError: If the request times out after retries
+        ValueError: If retry controls are invalid
     """
+    if not isinstance(max_retries, int) or isinstance(max_retries, bool) or max_retries < 0:
+        raise ValueError("max_retries must be a non-negative integer")
+    if retry_delay < 0:
+        raise ValueError("retry_delay must be non-negative")
+
     req = Request(url, headers={'User-Agent': 'gap-analysis-script'})
-    with urlopen(req, timeout=timeout) as response:
-        return response.read()
+    attempts = max_retries + 1
+
+    for attempt in range(1, attempts + 1):
+        try:
+            with urlopen(req, timeout=timeout) as response:
+                return response.read()
+        except HTTPError as error:
+            if error.code not in RETRYABLE_HTTP_STATUS_CODES:
+                raise
+            last_error = error
+        except (URLError, TimeoutError) as error:
+            last_error = error
+
+        if attempt == attempts:
+            log_error(
+                f"HTTP fetch failed for {url} after {attempts} attempts "
+                f"(timeout={timeout}s): {last_error}"
+            )
+            raise last_error
+
+        delay = retry_delay * (2 ** (attempt - 1))
+        log_warning(
+            f"HTTP fetch failed for {url} (attempt {attempt}/{attempts}, "
+            f"timeout={timeout}s): {last_error}; retrying in {delay}s"
+        )
+        time.sleep(delay)
 
 
 def is_pre_ga_version(version):

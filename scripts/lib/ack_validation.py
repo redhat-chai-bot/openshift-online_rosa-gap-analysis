@@ -6,6 +6,8 @@ import subprocess
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 
+from common import fetch_url
+
 try:
     import yaml
 except ImportError:
@@ -34,10 +36,7 @@ def fetch_yaml_from_url(url):
         yaml.YAMLError: If YAML parsing fails
     """
     try:
-        req = Request(url, headers={'User-Agent': 'gap-analysis-script'})
-        with urlopen(req, timeout=30) as response:
-            data = response.read()
-            return yaml.safe_load(data)
+        return yaml.safe_load(fetch_url(url, timeout=30))
     except HTTPError as e:
         if e.code == 404:
             return None

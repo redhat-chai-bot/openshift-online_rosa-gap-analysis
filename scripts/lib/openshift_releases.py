@@ -3,10 +3,9 @@
 
 import json
 import sys
-from urllib.request import urlopen, Request
 from urllib.error import URLError
 
-from common import log_info, log_error
+from common import fetch_url, log_info, log_error
 
 
 SIPPY_API = "https://sippy.dptools.openshift.org/api/releases"
@@ -19,11 +18,9 @@ DEV_PREVIEW_STREAM = "4-dev-preview"
 def fetch_sippy_ga_dates():
     """Fetch GA dates from Sippy API."""
     try:
-        req = Request(SIPPY_API, headers={'User-Agent': 'gap-analysis-script'})
-        with urlopen(req, timeout=10) as response:
-            data = response.read()
-            return json.loads(data).get('ga_dates', {})
-    except (URLError, json.JSONDecodeError) as e:
+        data = fetch_url(SIPPY_API, timeout=10)
+        return json.loads(data).get('ga_dates', {})
+    except (URLError, TimeoutError, json.JSONDecodeError) as e:
         log_error(f"Failed to fetch GA dates from Sippy API: {e}")
         sys.exit(1)
 
@@ -55,10 +52,8 @@ def fetch_accepted_streams():
         dict: {"4-stable": ["4.22.0-rc.0", "4.21.11", ...], "4-dev-preview": [...]}
     """
     try:
-        req = Request(ACCEPTED_STREAMS_API, headers={'User-Agent': 'gap-analysis-script'})
-        with urlopen(req, timeout=10) as response:
-            return json.loads(response.read())
-    except (URLError, json.JSONDecodeError) as e:
+        return json.loads(fetch_url(ACCEPTED_STREAMS_API, timeout=10))
+    except (URLError, TimeoutError, json.JSONDecodeError) as e:
         log_error(f"Failed to fetch accepted release streams: {e}")
         sys.exit(1)
 
@@ -153,15 +148,13 @@ def get_latest_dev_nightly_version():
 
     try:
         url = f"{RELEASE_STREAM_BASE}/{dev_version}.0-0.nightly/latest?rel=1"
-        req = Request(url, headers={'User-Agent': 'gap-analysis-script'})
-        with urlopen(req, timeout=10) as response:
-            data = json.loads(response.read())
-            nightly_name = data.get('name')
-            if not nightly_name:
-                log_error(f"No nightly version found for {dev_version}")
-                sys.exit(1)
-            return nightly_name
-    except (URLError, json.JSONDecodeError, KeyError) as e:
+        data = json.loads(fetch_url(url, timeout=10))
+        nightly_name = data.get('name')
+        if not nightly_name:
+            log_error(f"No nightly version found for {dev_version}")
+            sys.exit(1)
+        return nightly_name
+    except (URLError, TimeoutError, json.JSONDecodeError, KeyError) as e:
         log_error(f"Failed to fetch latest nightly version: {e}")
         sys.exit(1)
 
