@@ -2,13 +2,18 @@
 """OCP Admin Gate Acknowledgment Analysis - Verify admin gates are acknowledged for upgrades."""
 
 import argparse
+import errno
 import json
 import os
+import re
+import socket
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
@@ -16,10 +21,11 @@ from urllib.error import URLError, HTTPError
 sys.path.insert(0, str(Path(__file__).parent / 'lib'))
 
 from common import log_info, log_success, log_error, log_warning
-from openshift_releases import resolve_gap_versions, extract_minor_version, get_next_minor_version
+import openshift_releases
+from openshift_releases import extract_minor_version, get_next_minor_version
 from reporters import generate_html_report, generate_json_report, generate_status_report
 from reporters import build_status_details, collect_errors, format_failure_message
-from ack_validation import fetch_yaml_from_url, calculate_expected_baseline, validate_config_yaml
+from ack_validation import calculate_expected_baseline, validate_config_yaml
 
 try:
     import yaml
@@ -31,22 +37,212 @@ except ImportError:
 # GitHub raw URLs
 CVO_ADMIN_GATE_URL = "https://raw.githubusercontent.com/openshift/cluster-version-operator/release-{version}/install/0000_00_cluster-version-operator_01_admingate_configmap.yaml"
 MCC_ADMIN_ACK_URL = "https://raw.githubusercontent.com/openshift/managed-cluster-config/master/deploy/osd-cluster-acks/ocp/{version}/admin-ack.yaml"
+CHECK_NUMBER = 3  # Internal analyzer number; displayed as Check #5 by gap-all.sh.
+CHECK_NAME = "OCP Admin Gate Acknowledgments"
+DEFAULT_RETRY_DELAYS = (2, 4)
+TRANSIENT_CONNECTION_ERRNOS = {
+    errno.ECONNABORTED,
+    errno.ECONNREFUSED,
+    errno.ECONNRESET,
+    errno.EHOSTUNREACH,
+    errno.ENETDOWN,
+    errno.ENETUNREACH,
+    errno.ETIMEDOUT,
+}
+TRANSIENT_NETWORK_MARKERS = (
+    "connection aborted",
+    "connection refused",
+    "connection reset",
+    "host is unreachable",
+    "network is down",
+    "network is unreachable",
+    "temporary failure in name resolution",
+    "timed out",
+)
 
 
-def fetch_yaml_from_github(url):
-    """Fetch and parse YAML from GitHub."""
+class ExternalOperationError(RuntimeError):
+    """External dependency failure with structured retry context."""
+
+    def __init__(self, stage, url, error, attempts=1, retries=None):
+        self.stage = stage
+        self.url = url
+        self.error = str(error)
+        self.attempts = attempts
+        self.retries = retries or []
+        super().__init__(
+            f"{stage} failed for {url or 'unknown external endpoint'} "
+            f"after {attempts} attempt(s): {self.error}"
+        )
+
+
+def _is_retryable_network_reason(reason):
+    """Return whether a URL failure reason is an explicit transient cause."""
+    if isinstance(reason, socket.gaierror):
+        return reason.errno == socket.EAI_AGAIN
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return True
+    if isinstance(reason, OSError) and reason.errno in TRANSIENT_CONNECTION_ERRNOS:
+        return True
+    if isinstance(reason, str):
+        reason = reason.lower()
+        return any(marker in reason for marker in TRANSIENT_NETWORK_MARKERS)
+    return False
+
+
+def _is_retryable_http_error(error):
+    """Return whether an HTTP/URL error is explicitly transient."""
+    if isinstance(error, HTTPError):
+        return error.code in (408, 429) or 500 <= error.code < 600
+    if isinstance(error, URLError):
+        return _is_retryable_network_reason(error.reason)
+    return _is_retryable_network_reason(error)
+
+
+def _version_error_url(error_messages):
+    """Map the release resolver's existing diagnostics to its source URL."""
+    message = " ".join(error_messages).lower()
+    if "accepted release stream" in message or (
+        "no version found for" in message and "checked" in message
+    ):
+        return openshift_releases.ACCEPTED_STREAMS_API
+    if "latest nightly version" in message or "no nightly version found" in message:
+        return openshift_releases.RELEASE_STREAM_BASE
+    if "sippy" in message or "ga date" in message:
+        return openshift_releases.SIPPY_API
+    return None
+
+
+def _is_retryable_version_error(error, error_messages):
+    """Identify resolver failures caused by transient external requests."""
+    if _is_retryable_http_error(error):
+        return True
+    message = " ".join(error_messages).lower()
+    if re.search(r"\bhttp error (?:408|429|5\d\d)\b", message):
+        return True
+    return _is_retryable_network_reason(message)
+
+
+def resolve_versions_with_retry(version=None, baseline=None, target=None,
+                                retry_delays=DEFAULT_RETRY_DELAYS):
+    """Resolve versions while preserving resolver errors and retry context."""
+    retries = []
+    original_log_error = openshift_releases.log_error
+    attempt_errors = []
+
+    def capture_error(message):
+        attempt_errors.append(str(message))
+        original_log_error(message)
+
+    openshift_releases.log_error = capture_error
     try:
-        req = Request(url, headers={'User-Agent': 'gap-analysis-script'})
-        with urlopen(req, timeout=30) as response:
-            data = response.read()
-            return yaml.safe_load(data)
-    except HTTPError as e:
-        if e.code == 404:
-            return None
-        raise
-    except (URLError, yaml.YAMLError) as e:
-        log_error(f"Failed to fetch or parse YAML from {url}: {e}")
-        raise
+        for attempt in range(1, len(retry_delays) + 2):
+            attempt_errors.clear()
+            try:
+                return openshift_releases.resolve_gap_versions(
+                    version=version,
+                    baseline=baseline,
+                    target=target,
+                )
+            except SystemExit as error:
+                last_error = error
+                error_text = "; ".join(attempt_errors) or f"version resolver exited with code {error.code}"
+                url = _version_error_url(attempt_errors)
+                retryable = _is_retryable_version_error(error, attempt_errors)
+            except Exception as error:
+                last_error = error
+                error_text = "; ".join(attempt_errors) or str(error)
+                url = _version_error_url(attempt_errors)
+                retryable = _is_retryable_version_error(error, attempt_errors)
+
+            if retryable and attempt <= len(retry_delays):
+                delay = retry_delays[attempt - 1]
+                retries.append({
+                    "attempt": attempt,
+                    "url": url,
+                    "error": error_text,
+                    "delay_seconds": delay,
+                })
+                log_info(
+                    f"Version resolution attempt {attempt} failed; "
+                    f"retrying in {delay}s: {error_text}"
+                )
+                time.sleep(delay)
+                continue
+
+            raise ExternalOperationError(
+                "version resolution",
+                url,
+                error_text,
+                attempts=attempt,
+                retries=retries,
+            ) from last_error
+    finally:
+        openshift_releases.log_error = original_log_error
+
+
+def write_execution_failure_status(report_dir, error):
+    """Write a structured Check #5 failure before exiting."""
+    if not isinstance(error, ExternalOperationError):
+        error = ExternalOperationError("analysis", None, error)
+
+    errors = [str(error)]
+    details = build_status_details(
+        format_failure_message("Check #5 execution failed", errors),
+        errors,
+        failure_stage=error.stage,
+        url=error.url,
+        host=urlparse(error.url).hostname if error.url else None,
+        attempts=error.attempts,
+        retries=error.retries,
+        validation_passed=False,
+    )
+    generate_status_report(
+        check_number=CHECK_NUMBER,
+        check_name=CHECK_NAME,
+        status="FAIL",
+        details=details,
+        report_dir=report_dir,
+    )
+
+
+def fetch_yaml_from_github(url, retry_delays=DEFAULT_RETRY_DELAYS, allow_missing=False):
+    """Fetch and parse YAML from GitHub."""
+    retries = []
+    req = Request(url, headers={'User-Agent': 'gap-analysis-script'})
+
+    for attempt in range(1, len(retry_delays) + 2):
+        try:
+            with urlopen(req, timeout=30) as response:
+                return yaml.safe_load(response.read())
+        except HTTPError as error:
+            if error.code == 404 and allow_missing:
+                return None
+            last_error = error
+        except (URLError, OSError, yaml.YAMLError) as error:
+            last_error = error
+
+        retryable = _is_retryable_http_error(last_error)
+        if retryable and attempt <= len(retry_delays):
+            delay = retry_delays[attempt - 1]
+            retries.append({
+                "attempt": attempt,
+                "url": url,
+                "error": str(last_error),
+                "delay_seconds": delay,
+            })
+            log_info(f"Fetch attempt {attempt} failed; retrying in {delay}s: {url}: {last_error}")
+            time.sleep(delay)
+            continue
+
+        log_error(f"Failed to fetch or parse YAML from {url} after {attempt} attempt(s): {last_error}")
+        raise ExternalOperationError(
+            "YAML fetch",
+            url,
+            last_error,
+            attempts=attempt,
+            retries=retries,
+        ) from last_error
 
 
 def fetch_admin_gates(version):
@@ -86,7 +282,7 @@ def fetch_admin_acks(version):
         url = f"https://raw.githubusercontent.com/openshift/managed-cluster-config/master/deploy/osd-cluster-acks/ocp/{version}/{filename}"
         log_info(f"Fetching admin acknowledgments from {url}")
 
-        ack_configmap = fetch_yaml_from_github(url)
+        ack_configmap = fetch_yaml_from_github(url, allow_missing=True)
         if ack_configmap:
             # Extract acks from data field
             acks = ack_configmap.get('data', {})
@@ -224,7 +420,7 @@ def validate_ocp_acknowledgment_structure(baseline, target, gates_exist, ack_fil
     log_info(f"Validating acknowledgment structure (gates_exist={gates_exist}, ack_file={ack_filename})...")
 
     try:
-        config_data = fetch_yaml_from_url(config_url)
+        config_data = fetch_yaml_from_github(config_url, allow_missing=True)
         config_exists = config_data is not None
         result['config_exists'] = config_exists
 
@@ -286,6 +482,8 @@ def validate_ocp_acknowledgment_structure(baseline, target, gates_exist, ack_fil
                 # Neither file exists - normal/expected case
                 result['valid'] = True
 
+    except ExternalOperationError:
+        raise
     except Exception as e:
         result['errors'].append(f"Error validating acknowledgment structure: {e}")
 
@@ -466,10 +664,24 @@ Exit Codes:
 
     args = parser.parse_args()
 
-    # Resolve versions using shared logic
-    baseline_full, target_full = resolve_gap_versions(
-        version=args.version, baseline=args.baseline, target=args.target
-    )
+    # Resolve versions using shared logic, but ensure resolver exits still produce
+    # the structured status artifact expected by the orchestrator.
+    try:
+        baseline_full, target_full = resolve_versions_with_retry(
+            version=args.version,
+            baseline=args.baseline,
+            target=args.target,
+        )
+        if not baseline_full or not target_full:
+            raise ExternalOperationError(
+                "version resolution",
+                None,
+                "resolver did not return both baseline and target versions",
+            )
+    except ExternalOperationError as error:
+        log_error(f"Analysis failed: {error}")
+        write_execution_failure_status(args.report_dir, error)
+        sys.exit(1)
 
     # Extract minor versions (admin gates use minor versions like 4.21, 4.22)
     baseline_minor = extract_minor_version(baseline_full)
@@ -661,8 +873,8 @@ Exit Codes:
                 validation_passed=False,
             )
             generate_status_report(
-                check_number=3,
-                check_name="OCP Admin Gate Acknowledgments",
+                check_number=CHECK_NUMBER,
+                check_name=CHECK_NAME,
                 status="FAIL",
                 details=status_details,
                 report_dir=args.report_dir,
@@ -702,8 +914,8 @@ Exit Codes:
                 "message": status_message
             }
             generate_status_report(
-                check_number=3,
-                check_name="OCP Admin Gate Acknowledgments",
+                check_number=CHECK_NUMBER,
+                check_name=CHECK_NAME,
                 status="PASS",
                 details=status_details,
                 report_dir=args.report_dir,
@@ -713,6 +925,7 @@ Exit Codes:
 
     except Exception as e:
         log_error(f"Analysis failed: {e}")
+        write_execution_failure_status(args.report_dir, e)
         if args.verbose:
             import traceback
             traceback.print_exc()

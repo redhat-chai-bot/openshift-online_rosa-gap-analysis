@@ -627,7 +627,9 @@
                         <td style="text-align: center;">-</td>
                         <td style="text-align: center;">-</td>
                         <td>
-                            {% if ocp_gate_ack.summary.gates_requiring_ack == 0 %}
+                            {% if ocp_gate_ack.validation_result == 'FAIL' and ocp_gate_ack.error_message %}
+                            {{ ocp_gate_ack.error_message }}
+                            {% elif ocp_gate_ack.summary.gates_requiring_ack == 0 %}
                             No gates requiring ack
                             {% else %}
                             {{ ocp_gate_ack.summary.gates_requiring_ack }} gates, {{ ocp_gate_ack.summary.unacknowledged }} unacked
@@ -1195,15 +1197,14 @@
 
             <h3>Validation Status</h3>
             {% set minor_version = ocp_gate_ack.ack_check_version.split('.')[0] + '.' + ocp_gate_ack.ack_check_version.split('.')[1] %}
-            <div class="alert {% if ocp_gate_ack.summary.gates_requiring_ack == 0 or ocp_gate_ack.validation_result == 'PASS' %}success{% else %}error{% endif %}">
-                <strong>{% if ocp_gate_ack.summary.gates_requiring_ack == 0 or ocp_gate_ack.validation_result == 'PASS' %}✅ Validation Passed{% else %}❌ Validation Failed{% endif %}</strong>
+            <div class="alert {% if ocp_gate_ack.validation_result == 'FAIL' %}error{% else %}success{% endif %}">
+                <strong>{% if ocp_gate_ack.validation_result == 'FAIL' %}❌ Validation Failed{% else %}✅ Validation Passed{% endif %}</strong>
                 <ul style="margin: 10px 0 0 0; padding-left: 20px;">
-                {% if ocp_gate_ack.summary.gates_requiring_ack == 0 %}
-                    <li><strong>CHECK #5: Admin Gate Acknowledgment - PASSED</strong></li>
-                    <li style="margin-left: 20px;">No admin gates found in baseline version <code>{{ baseline }}</code></li>
-                    <li style="margin-left: 20px;">No acknowledgments required for version <code>{{ ocp_gate_ack.ack_check_version }}</code></li>
-                {% elif ocp_gate_ack.validation_result == 'FAIL' %}
+                {% if ocp_gate_ack.validation_result == 'FAIL' %}
                     <li><strong>CHECK #5: Admin Gate Acknowledgment - FAILED</strong></li>
+                    {% if ocp_gate_ack.error_message %}
+                        <li style="margin-left: 20px;">{{ ocp_gate_ack.error_message }}</li>
+                    {% endif %}
                     {% if ocp_gate_ack.summary.ack_file_missing and ocp_gate_ack.summary.gates_requiring_ack > 0 %}
                         <li style="margin-left: 20px;">Acknowledgment file missing for version {{ ocp_gate_ack.ack_check_version }}</li>
                         <li style="margin-left: 20px;">Expected location: <a href="https://github.com/openshift/managed-cluster-config/tree/master/deploy/osd-cluster-acks/ocp/{{ minor_version }}" target="_blank" style="color: #007bff; text-decoration: underline;">deploy/osd-cluster-acks/ocp/{{ minor_version }}/admin-ack.yaml or admin-gates.yaml</a></li>
@@ -1216,6 +1217,10 @@
                         <li style="margin-left: 20px;">Structure error: {{ error }}</li>
                         {% endfor %}
                     {% endif %}
+                {% elif ocp_gate_ack.summary.gates_requiring_ack == 0 %}
+                    <li><strong>CHECK #5: Admin Gate Acknowledgment - PASSED</strong></li>
+                    <li style="margin-left: 20px;">No admin gates found in baseline version <code>{{ baseline }}</code></li>
+                    <li style="margin-left: 20px;">No acknowledgments required for version <code>{{ ocp_gate_ack.ack_check_version }}</code></li>
                 {% else %}
                     <li><strong>CHECK #5: Admin Gate Acknowledgment - PASSED</strong></li>
                     <li style="margin-left: 20px;">Location:

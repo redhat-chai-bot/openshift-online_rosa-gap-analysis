@@ -397,6 +397,14 @@ def main():
         with open(reports['ocp_gate_ack'], 'r') as f:
             report_data['ocp_gate_ack'] = json.load(f)
         log_info(f"Loaded OCP Gate Acknowledgment report: {reports['ocp_gate_ack']}")
+
+        # A failed current run may exit before replacing an analyzer report from
+        # an earlier run.  The per-run status artifact is therefore authoritative.
+        if fallback_validation_result_local(3) == 'FAIL':
+            err_msg = get_status_msg(3, "OCP Gate Acknowledgment script execution failed")
+            report_data['ocp_gate_ack']['validation_result'] = 'FAIL'
+            report_data['ocp_gate_ack']['error_message'] = err_msg
+            report_data['ocp_gate_ack'].setdefault('summary', {})['upgrade_ready'] = False
     else:
         err_msg = get_status_msg(3, "OCP Gate Acknowledgment script execution failed or check skipped")
         report_data['ocp_gate_ack'] = {
