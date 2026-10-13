@@ -2,6 +2,34 @@
 
 All gap analysis scripts automatically generate reports in multiple formats when executed.
 
+## Summary Artifact Links
+
+`scripts/gap-all.sh` always lists the local reports directory and HTML files.
+For ci-operator periodic jobs using Prow's `single` GCS path strategy, it also
+prints public URLs on `gcs.ci.openshift.org` when complete metadata is available:
+
+- `JOB_SPEC` supplies the job, build ID, bucket, job type, and path strategy.
+- `JOB_NAME` and `BUILD_ID`, when present, must agree with `JOB_SPEC`.
+- `JOB_NAME_SAFE` supplies the multi-stage test target. Bash's `HOSTNAME`
+  is the pod name `<target>-<step>`; removing the target prefix gives the
+  step name. The script forwards it even when it is not exported.
+- `ARTIFACT_DIR` identifies the uploaded directory. Reports must be inside it.
+
+The [public periodic caller](https://github.com/openshift/release/blob/main/ci-operator/config/openshift-online/rosa-gap-analysis/openshift-online-rosa-gap-analysis-main__periodics.yaml)
+sets `REPORT_DIR=${ARTIFACT_DIR}/rosa-gap-analysis-reports`.
+[ci-operator pod generation](https://github.com/openshift/ci-tools/blob/90cf31998ee198bb268c2c708b93a6fca04d5f3c/pkg/steps/multi_stage/gen.go)
+sets the target environment variable, pod name, and `<target>/<step>` upload directory.
+The resulting report path is
+`<bucket>/logs/<job>/<buildid>/artifacts/<target>/<step>/<artifact-directory-name>/<report-relative-path>/<filename>`.
+For `nightly-5-0`, this includes
+`artifacts/nightly-5-0/5-0-gap-analysis/artifacts/rosa-gap-analysis-reports/`.
+The build log is at `<bucket>/logs/<job>/<buildid>/build-log.txt`.
+
+Missing, malformed, unsupported, or ambiguous metadata produces local paths
+only, never placeholder remote URLs. Truncated pod hostnames are not used.
+If `BUILD_LOG` is set in a local run, its path is included in the summary.
+Link generation does not affect analysis results or exit codes.
+
 ## Report Formats
 
 Each script execution generates two report files:

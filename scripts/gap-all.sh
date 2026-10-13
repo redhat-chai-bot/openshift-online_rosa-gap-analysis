@@ -865,14 +865,6 @@ EOF
     echo "GAP ANALYSIS SUMMARY"
     echo "==============================================================================="
 
-    # Job information (if running in CI)
-    if [[ -z "${job:-}" ]]; then
-        job="job123"
-    fi
-    if [[ -z "${buildid:-}" ]]; then
-        buildid="build1234"
-    fi
-
     echo "Baseline: ${BASELINE}"
     echo "Target: ${TARGET}"
     echo "Started: ${START_TIME_FORMATTED}"
@@ -916,22 +908,8 @@ EOF
     fi
 
     echo ""
-    echo "ARTIFACTS:"
-    echo "- Reports directory: ${REPORT_DIR}/"
-
-    # List HTML reports if they exist
-    local html_reports=$(find "${REPORT_DIR}" -maxdepth 1 -name "*.html" -type f 2>/dev/null | sort)
-    if [[ -n "$html_reports" && -n "$job" && -n "$buildid" ]]; then
-        echo "- HTML reports:"
-        while IFS= read -r report; do
-            local basename=$(basename "$report")
-            echo "  • https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results/logs/${job}/${buildid}/artifacts/test/artifacts/rosa-gap-analysis-reports/${basename}"
-        done <<< "$html_reports"
-    fi
-
-    # Add build log if available
-    if [[  -n "$job" && -n "$buildid" ]]; then
-        echo "- Build log: https://prow.ci.openshift.org/view/gs/test-platform-results/logs/${job}/${buildid}/build-log.txt"
+    if ! HOSTNAME="${HOSTNAME:-}" python3 "${SCRIPT_DIR}/lib/summary_artifacts.py" "$REPORT_DIR"; then
+        log_warning "Unable to list artifact links (reports remain in ${REPORT_DIR}/)"
     fi
 
     echo "==============================================================================="
